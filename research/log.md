@@ -273,3 +273,27 @@ dominant I/O term — a direct `bytes_touched_per_token` cut, the one term greed
 Decisive first experiment (quality, no engine): perplexity floor of low-bit experts — whole model,
 then hot/cold split — before building the mixed-precision store. MIND the CUDA 13.2 IQ2/IQ3 sm_120
 kernel miscompile: validate low-bit expert matmuls on the CPU reference. This is the next measurement.
+
+### Thesis C — I/O ceiling confirmed large (2026-07-13, `llama-quantize --dry-run`)
+
+Overriding only the expert tensors (`ffn_{gate,up,down}_exps`) to low-bit, Qwopus total size:
+
+| experts at | total size | BPW | vs Q6_K experts (bytes) |
+|---|---|---|---|
+| Q6_K (baseline) | 27.8 GB | 6.58 | 1.0× |
+| IQ3_XXS | 14.1 GB | 3.32 | ~2× fewer expert bytes |
+| IQ2_XXS | 10.1 GB | 2.39 | ~3× fewer expert bytes |
+
+Streamed bytes ARE the cold experts, so this is a near-direct `bytes_touched_per_token` cut ⇒ up to
+~2× (IQ3) / ~3× (IQ2) tok/s **iff quality holds**. On GLM the target, IQ3 experts ⇒ ~2× fewer
+streamed bytes ⇒ projected ~1.8 tok/s (2× the 0.9 baseline). Unlike A/B this does not fight the
+streamer — it shrinks each slab. The whole bet now reduces to ONE quality number.
+
+**Quality pipeline (next):** build `llama-imatrix`; compute an importance matrix on a calibration
+corpus (IQ2_XXS needs it — a no-imatrix requant would understate C); produce Qwopus expert-IQ3 and
+expert-IQ2 variants; run `llama-perplexity` (experts CPU via `-cmoe`, dodging the sm_120 low-bit
+kernel trap) for Q6_K vs IQ3 vs IQ2 on a fixed corpus (wikitext-2). Then the hot/cold split
+(hot experts IQ4, only the Zipf-cold tail IQ2) — expected to recover most of any IQ2 quality loss
+while keeping most of the byte saving, since cold experts are rarely routed. Verdict rule: if
+expert-IQ3 holds PPL within a few % it is an immediate ~2× lever; if only the hot/cold split holds,
+quantify the byte/quality trade and size the split from the existing Zipf profile.
