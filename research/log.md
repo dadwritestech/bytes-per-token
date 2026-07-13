@@ -232,3 +232,44 @@ honest levers, in KICKOFF terms:
 - **Cut `t_fix`** — profile the 0.36 s/token per-layer sync/sampling; it's the only software lever
   once I/O is optimal, and it speeds up *greedy directly* (halving it ≈ +19% tok/s).
 - **Thesis C — adaptive-precision cold experts** (IQ2/IQ3 for rare experts) also reduces `io_tok`.
+
+### Thesis B RESULT — predictive prompt-pin loses to the reactive streamer (2026-07-13)
+
+Tooling: `route-trace` WS mode (`RT_WS_GEN`) captures routing for prompt tokens (phase 0) + a
+greedy generation (phase 1); `analysis/working_set.py` computes working-set size, saturation, and
+touch-coverage at a fixed pin budget H experts/layer for LRU (what the streamer does) vs predictive
+(pin prompt top-H) vs hybrid vs oracle (static top-H by gen freq) vs random. LRU sim validated
+against hand cases.
+
+Two decisive facts (Qwopus 128-gen prose/code + GLM 96-gen prose):
+1. **The per-prompt working set is large and does NOT saturate.** GLM: generation touches 38% of
+   experts/layer (98/256) in 96 tokens, still climbing (4→19→51→98). Qwopus prose 45%, code 67%.
+   At ~120 GB of experts that is far beyond the ~12 GB RAM a pin could use — it cannot be resident.
+2. **Predictive < reactive at every feasible budget.** Coverage of gen touches (GLM):
+
+   | H/layer | LRU (streamer) | predictive (prompt) | oracle | random |
+   |---|---|---|---|---|
+   | 8  | **42.1%** | 27.0% | 41.8% | 2.9% |
+   | 16 | **52.6%** | 32.7% | 56.0% | 5.6% |
+   | 32 | **62.1%** | 43.8% | 73.0% | 12.3% |
+
+   The prompt carries real signal (27% ≫ 3% random) but **less** than the LRU's reactive
+   convergence to the generation's own hot set. Ranking is oracle ≥ LRU ≥ predictive ≫ random.
+   Hybrid (pin prompt-half + LRU rest) ≈ LRU (no gain at feasible H≈8). At the RAM-feasible budget
+   even the oracle covers only ~42% → ~58% streams from disk no matter the strategy.
+
+**VERDICT: Thesis B (prompt-conditioned resident working set) is DEAD.** The deployed reactive LRU
+streamer is already at/above what any prompt-predicted static pin achieves, and per-prompt working
+sets are too large to pin in 31 GB anyway. Matches the deep A2 reason: the streamer already sits at
+the I/O frontier; predicting the hot set earlier doesn't add bytes it isn't already caching. This
+also subsumes the inherited "pin ≈ streamer (both 0.9)" result with a coverage-level explanation.
+
+### Now the only unrefuted lever left: cut bytes-per-expert (Thesis C)
+
+A/B and A2 leave exactly one software lever that reduces `io_tok` without needing a resident set:
+**store/stream the Zipfian-cold experts at lower precision** (hot IQ4, cold IQ2/IQ3). The cold
+tail dominates streamed bytes (it's the cache misses), so halving its precision ≈ halves the
+dominant I/O term — a direct `bytes_touched_per_token` cut, the one term greedy can't optimize away.
+Decisive first experiment (quality, no engine): perplexity floor of low-bit experts — whole model,
+then hot/cold split — before building the mixed-precision store. MIND the CUDA 13.2 IQ2/IQ3 sm_120
+kernel miscompile: validate low-bit expert matmuls on the CPU reference. This is the next measurement.

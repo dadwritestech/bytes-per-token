@@ -188,17 +188,25 @@ int main(int argc, char ** argv) {
     std::vector<llama_token> toks = common_tokenize(ctx, params.prompt, add_bos, true);
     if (toks.empty()) { LOG_ERR("no input tokens (use -p)\n"); return 1; }
 
+    // Thesis B working-set mode (RT_WS_GEN>0): capture routing for prompt tokens AND a greedy
+    // generation, labeled by phase, so per-prompt working-set size and prompt→generation expert
+    // overlap can be measured.
+    const int WS_GEN = env_int("RT_WS_GEN", 0);
+
     FILE * out = fopen(OUT, "w");
     if (!out) { LOG_ERR("cannot open RT_OUT=%s\n", OUT); return 1; }
-    fprintf(out, (TREE_D > 0) ? "node,parent,depth,layer,n_used,eids\n"
+    fprintf(out, (WS_GEN > 0) ? "phase,pos,layer,n_used,eids\n"
+                : (TREE_D > 0) ? "node,parent,depth,layer,n_used,eids\n"
                               : "step,rank,token,layer,n_used,eids\n");
 
-    // --- prefill the prompt (seq 0, positions 0..P-1), no capture ---
-    g_capture = false;
+    // --- prefill the prompt (seq 0, positions 0..P-1); capture iff WS mode ---
+    g_capture = (WS_GEN > 0);
+    g_layer_cap.clear();
     {
         llama_batch pb = llama_batch_get_one(toks.data(), (int32_t) toks.size());
         if (llama_decode(ctx, pb)) { LOG_ERR("prefill decode failed\n"); return 1; }
     }
+    g_capture = false;
     llama_pos n_past = (llama_pos) toks.size();
 
     auto greedy_from_last = [&](void) -> llama_token {
@@ -207,6 +215,40 @@ int main(int argc, char ** argv) {
         for (int i = 0; i < n_vocab; ++i) { if (lg[i] > bv) { bv = lg[i]; best = i; } }
         return best;
     };
+
+    // ---- WS mode: dump prompt routing (captured above) + greedy generation routing ----
+    if (WS_GEN > 0) {
+        // prompt tokens: g_layer_cap holds [n_used, P] per layer
+        for (auto & kv : g_layer_cap) {
+            const int il = kv.first; const layer_cap & lc = kv.second;
+            for (int c = 0; c < lc.n_cand; ++c) {
+                fprintf(out, "0,%d,%d,%d,", c, il, lc.n_used);
+                for (int j = 0; j < lc.n_used; ++j) fprintf(out, "%d%s", lc.ids[(size_t)c*lc.n_used+j], (j+1<lc.n_used)?" ":"");
+                fprintf(out, "\n");
+            }
+        }
+        // greedy generation with capture, committed to seq 0
+        for (int t = 0; t < WS_GEN; ++t) {
+            llama_token g = greedy_from_last();
+            llama_batch b = llama_batch_init(1, 0, 1);
+            b.n_tokens=1; b.token[0]=g; b.pos[0]=n_past; b.n_seq_id[0]=1; b.seq_id[0][0]=0; b.logits[0]=1;
+            g_layer_cap.clear(); g_capture = true;
+            int rc = llama_decode(ctx, b); g_capture = false; llama_batch_free(b);
+            if (rc != 0) { LOG_ERR("ws gen decode failed\n"); return 1; }
+            for (auto & kv : g_layer_cap) {
+                const int il = kv.first; const layer_cap & lc = kv.second;
+                fprintf(out, "1,%d,%d,%d,", (int)n_past, il, lc.n_used);
+                for (int j = 0; j < lc.n_used; ++j) fprintf(out, "%d%s", lc.ids[j], (j+1<lc.n_used)?" ":"");
+                fprintf(out, "\n");
+            }
+            n_past++;
+            if ((t % 16) == 0) LOG_INF("ws gen %d/%d\n", t, WS_GEN);
+        }
+        fclose(out);
+        LOG_INF("route-trace WS: wrote %s (prompt=%d gen=%d)\n", OUT, (int)toks.size(), WS_GEN);
+        llama_backend_free();
+        return 0;
+    }
 
     // optional warmup: advance greedily to reach a mid-generation context
     for (int w = 0; w < WARM; ++w) {
