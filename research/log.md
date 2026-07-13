@@ -323,3 +323,29 @@ tighten with more chunks / wikitext before final GLM numbers.)
 **Status: Thesis C ALIVE — the one lever that works.** Next: (1) GLM expert-Q3/Q2 PPL on the target
 (needs a GLM requant, or imatrix i-quants); (2) hot/cold split sized from the Zipf profile to push
 past IQ4 at held quality; (3) then the mixed-precision streamer + measured tok/s A/B vs 0.9.
+
+### Hot/cold split is BACKWARDS for I/O — uniform low-bit + imatrix dominates (2026-07-14)
+
+The KICKOFF's Thesis-C sketch (hot experts high-precision, cold experts IQ2) is I/O-counterproductive.
+Streamed bytes/token are dominated by the HOT experts — they are routed most often (that is what
+makes them hot). Protecting them at high precision protects exactly the bytes streamed every token;
+shrinking cold experts saves little because they are rarely read. Quantified from GLM gen touches
+(effective streamed bpw = hot-touch-coverage·bpw_hot + rest·bpw_cold, hot@IQ4 4.25 / cold@IQ2 2.06):
+
+| scheme | hot-touch coverage | eff. streamed bpw | I/O gain vs IQ4 |
+|---|---|---|---|
+| hot=top8@IQ4 / cold@IQ2  | 42% | 2.97 | 1.43× |
+| hot=top32@IQ4 / cold@IQ2 | 73% | 3.66 | 1.16× |
+| hot=top64@IQ4 / cold@IQ2 | 90% | 4.03 | 1.06× |
+| **uniform Q3_K** (measured +1.7% PPL) | — | 3.44 | 1.24× |
+| uniform IQ2 (+imatrix) | — | 2.06 | 2.06× |
+
+The more experts you protect (for quality) the LESS I/O you save — and uniform Q3_K already beats the
+top-16/32 hot/cold points on BOTH bytes and quality. The correct way to "spend bits where they
+matter" is an **imatrix**: it allocates precision per weight-block *within* a uniform low-bit byte
+budget → full I/O win (all experts small, incl. hot) + quality protection on the important directions.
+So the real question is not hot/cold — it is *how low can UNIFORM expert precision go, imatrix-guided,
+at held quality?* Testing imatrix IQ3_XXS (3.06 bpw) and IQ2_XXS (2.06 bpw) vs the naive-Q2_K +8.6%.
+(imatrix computed on PTB; shares corpus with eval ⇒ upper bound on the imatrix benefit — a held-out
+corpus is needed before final numbers. imatrix showed 90–95% expert coverage: cold experts activate
+too rarely to fully calibrate, itself consistent with the Zipf.)
