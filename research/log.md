@@ -187,3 +187,48 @@ Build the batched tree-verify engine only if measured `(union_total, m)` clears 
 AND the projected tok/s beats 0.9. Note: prior MTP failure was a width-1 chain (`m ≤ D`, and byte
 term `= D·single` with zero fixed-cost amortization modelled) — the tree + fixed-cost framing is
 the new, untested angle.
+
+### Thesis A2 RESULT — tree-verify is byte-dead on this box, even with a perfect draft (2026-07-13)
+
+Measured the I/O half directly: `route-trace` TREE mode expands a real w-ary depth-D tree (each
+node its own KV seq via `seq_cp` from its parent) and dumps every node's routed experts;
+`analysis/tree_io.py` computes `tree_slabs = Σ_layers |∪ all nodes|` vs the accepted root→leaf
+`path_slabs`, and projects tok/s with the measured `io_tok=0.71s`, `t_fix=0.36s` (greedy≈0.93).
+
+| tree (w×D) | model | nodes | R=tree/path | tok/s @ **perfect** accept (m=D) | verdict |
+|---|---|---|---|---|---|
+| 2×4 | GLM-5.2 | 30 | 3.30 | 0.54 (need m>6.9, max 4) | LOSE |
+| 4×2 | Qwopus | 20 | 2.88 | 0.53 (need m>3.5, max 2) | LOSE |
+| 3×3 | Qwopus | 39 | 2.84 | 0.61 (need m>4.6, max 3) | LOSE |
+| 2×6 | Qwopus | 126 | 3.01 | 0.77 (need m>7.3, max 6) | LOSE |
+
+**Every shape loses even at m=D (perfect acceptance).** The required accepted length always
+*exceeds the tree's own depth* — i.e. reading the tree once already costs more wall-clock than
+greedy takes to emit D tokens, so no draft quality can rescue it. Acceptance never enters the
+verdict; the byte budget is blown first. (⇒ the expensive MTP-draft build was correctly skipped.)
+
+**Root cause (fundamental, not a tuning miss):** greedy is I/O-optimal (reads only experts it
+uses). The only lever is amortizing `t_fix`, but the tolerance is `R* = 1 + t_fix/io_tok ≈ 1.51`.
+MoE breadth reuse is only ~2–3× (not the ~w× that would make width free), so any branching that
+buys acceptance depth costs R≈2.6–3.3 in I/O — 2× over budget. Sibling reuse is real but too weak.
+
+**VERDICT: Thesis A (batched speculative tree to amortize expert I/O) is DEAD on this box** for the
+I/O-bound regime. It would only turn positive if `io_tok/t_fix` fell by ~2× — i.e. expert reads got
+~4× cheaper (model largely resident in RAM / much faster storage), which contradicts the premise
+(model ≫ RAM). Redeems the MTP negative with a general reason, and closes the whole speculative-
+amortization family (breadth *and* depth). Tools (`route-trace`, `union_growth`, `depth_union`,
+`tree_io`) kept.
+
+### Where next (post-Thesis-A)
+
+The measurements establish two hard facts: (1) greedy already sits near the I/O ceiling (≈64% disk,
+streamer optimal); (2) the residual 36% is `t_fix` = per-layer CPU↔GPU sync + sampling. Remaining
+honest levers, in KICKOFF terms:
+- **Thesis B — prompt-conditioned resident working set** (highest unexplored ceiling): is the expert
+  set *per-conversation* small and predictable from the prompt pass? If so, pin it to RAM+VRAM and
+  run generation mostly from fast memory. Decisive measurement: per-prompt working-set size +
+  prompt→generation expert-overlap. (Note: this reduces `io_tok` itself — the only way, per the A2
+  analysis, that anything here improves.)
+- **Cut `t_fix`** — profile the 0.36 s/token per-layer sync/sampling; it's the only software lever
+  once I/O is optimal, and it speeds up *greedy directly* (halving it ≈ +19% tok/s).
+- **Thesis C — adaptive-precision cold experts** (IQ2/IQ3 for rare experts) also reduces `io_tok`.
