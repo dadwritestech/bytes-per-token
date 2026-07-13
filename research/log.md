@@ -70,4 +70,58 @@ GLM. Verdict rule:
 - `union(K) ≪ K × single` (high overlap) ⇒ Thesis A is **alive**; quantify the amortization
   factor `A(K) = (K × single) / union(K)` per layer and overall, then build the batched engine.
 
-Status: **measuring** (see below).
+Status: **first gate PASSED** (2026-07-13) — see result below.
+
+### Thesis A — result: breadth expert-reuse is strong and model-general (2026-07-13)
+
+Tooling: `llama-route-trace` (oracle example `examples/route-trace`, opt-in, zero model surgery).
+It registers a `ggml_backend_sched_eval_callback` that captures the `ffn_moe_topk-<il>` tensor
+(final global expert IDs, group-mask already applied). At each real generation step it seeds K
+scratch KV sequences from the shared prefix (`seq_cp`) and decodes the top-K next-token candidates
+as ONE batch (a real "verify batch") at the same position — exactly the Thesis-A workload.
+`ffn_moe_topk` is a *strided top-k view* of a full `[n_expert, n_cand]` argsort — must index by
+`nb[1]`, not `n_used` (this bug first showed as impossible perfect-disjoint sets; a same-token
+control `RT_SAMETOK` that must give A(K)=K caught it). Analysis: `analysis/union_growth.py`.
+
+Metric: `A(K) = (K·n_used) / mean_layer_union(K)` = expert-slab reads amortized across K candidate
+evaluations. A(K)=1 ⇒ no reuse (dead); A(K)≫1 ⇒ strong reuse (alive).
+
+**Qwopus3.6-35B (top-8, 256 exp), 3 prompts × 32 steps × WARM 8, K=16, 3840 (step,layer) groups:**
+
+| K | union(K) | K·n_used | A(K) | overlap% |
+|---|----------|----------|------|----------|
+| 2 | 12.9 | 16 | 1.24 | 39% |
+| 4 | 18.8 | 32 | 1.71 | 55% |
+| 8 | 26.5 | 64 | 2.41 | 67% |
+| 16 | 35.8 | 128 | **3.58** | 77% |
+
+A(K) is **still climbing at K=16** (not saturated); mid-layers reuse most. Per-prompt A(16):
+prose 3.95, science 3.59, code 3.01 — consistent.
+
+**GLM-5.2 (top-4, 256 exp, group-routed, MLA), streamer 12GB, K=8 smoke:** A(8)≈2.1, same
+climbing shape, matching Qwopus's A(8)=2.4. (Clean K=16 GLM run in progress.) Two very different
+models giving the same law ⇒ breadth reuse is a *structural* property of MoE routing, like the
+neuron keep-rate finding.
+
+**Verdict: Thesis A's first gate is PASSED — union(K) grows far sub-linearly (≈K^0.5).** A breadth
+of candidate tokens sharing a context is I/O-cheap: one expert read serves ~3.6–4 candidate
+evaluations at K=16, and more as K grows. This is the exact inverse of the MTP/depth failure
+(routing churns *across positions* but is shared *across siblings at a position*).
+
+### The honest caveat — breadth being cheap is necessary, not yet sufficient
+
+A(K) counts reuse across candidate *evaluations*. Throughput is *accepted tokens per byte read*.
+K alternatives at ONE position yield ≤1 accepted token, so same-position breadth alone is not a
+win (reading union(16)=32 slabs to emit 1 token is 8× the greedy I/O). The win comes from using
+cheap breadth to make **wide speculative trees** affordable: I/O per verify ≈ Σ over tree *levels*
+of union(width) (siblings reuse within a level at A≈4; levels are ~independent, per the depth
+result). Cheap width ⇒ explore wider ⇒ longer accepted path per verify ⇒ more tokens per unit I/O.
+
+### Next decisive experiment — Thesis A2 (tree acceptance vs union-I/O)
+
+Measure, with a real draft (GLM/Qwopus MTP head or the model's own top-K tree): expected
+**accepted tokens per verify** vs **total union expert bytes per verify** (`Σ_levels union(width)`),
+as a function of tree width/depth. Win iff `E[accepted] / E[union bytes] > 1 / n_used`
+(i.e. `E[accepted] > union_total / n_used`). Build the batched tree-verify engine only if this
+clears greedy's 0.9 tok/s ceiling. The A(K) curve here sets the per-level I/O cost model that
+experiment plugs into.
