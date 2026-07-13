@@ -1,0 +1,12 @@
+# large / generated artifacts — never commit these
+*.gguf
+*.csv
+*.bin
+*.log
+*.tmp
+traces/
+build/
+__pycache__/
+*.pyc
+# but DO keep small curated data
+!prompts/*.txt

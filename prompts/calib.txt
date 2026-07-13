@@ -1,0 +1,10 @@
+The history of the Roman Empire is a story of gradual expansion followed by
+Explain how a modern solid-state drive achieves high random-read throughput compared to a spinning disk.
+def quicksort(arr):
+    if len(arr) <= 1:
+        return arr
+    pivot = arr[len(arr) // 2]
+In quantum mechanics, the uncertainty principle states that
+Once upon a time, in a village nestled between two great mountains, there lived a
+The key differences between the mitochondria of plant and animal cells are
+When negotiating a commercial lease, the most important clauses to review carefully are
