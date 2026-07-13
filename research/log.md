@@ -121,11 +121,40 @@ cheap breadth to make **wide speculative trees** affordable: I/O per verify ≈ 
 of union(width) (siblings reuse within a level at A≈4; levels are ~independent, per the depth
 result). Cheap width ⇒ explore wider ⇒ longer accepted path per verify ⇒ more tokens per unit I/O.
 
+### The sharpened win condition (derived 2026-07-13) — and why it reframes Thesis A
+
+Working the wall-clock math changes the target. Let `single` = one token's routed expert bytes,
+`byte_time` = cold read time per expert byte, `t_fix` ≈ 0.36 s/token = the measured non-I/O cost
+(per-layer CPU↔GPU sync + sampling). Greedy reads EXACTLY the experts it uses → **greedy is
+I/O-optimal for expert bytes**; any speculation reads extra (rejected branches). So Thesis A
+cannot win by cutting expert I/O.
+
+Compare one tree-verify producing `m` accepted tokens against `m` greedy tokens:
+```
+m greedy   : m·(single·byte_time + t_fix)
+one verify : union_total·byte_time + t_fix        (fixed cost paid ONCE for the batch)
+WIN  ⟺  (union_total − m·single)·byte_time  <  (m−1)·t_fix
+        \_____ extra expert bytes read _____/       \__ fixed cost saved __/
+```
+**The lever is amortizing `t_fix`, not reducing I/O.** Sibling reuse (the A(K) result) is what
+keeps `union_total` from exploding with width, so the extra-bytes term stays smaller than the
+`(m−1)·t_fix` saving. With `t_fix`≈0.36 s and `single·byte_time`≈0.71 s (64% of the 1.11 s/token),
+the condition is roughly `(union_total/single − m) < 0.56·(m−1)` — i.e. the tree must read only a
+little more than the accepted path. This favors **narrow, deep** trees with high acceptance, NOT
+wide ones (wide inflates `union_total`). It is genuinely knife-edge → must be measured.
+
 ### Next decisive experiment — Thesis A2 (tree acceptance vs union-I/O)
 
-Measure, with a real draft (GLM/Qwopus MTP head or the model's own top-K tree): expected
-**accepted tokens per verify** vs **total union expert bytes per verify** (`Σ_levels union(width)`),
-as a function of tree width/depth. Win iff `E[accepted] / E[union bytes] > 1 / n_used`
-(i.e. `E[accepted] > union_total / n_used`). Build the batched tree-verify engine only if this
-clears greedy's 0.9 tok/s ceiling. The A(K) curve here sets the per-level I/O cost model that
-experiment plugs into.
+Two measured quantities feed the condition above, as a function of tree shape (width w, depth D):
+- `union_total(tree)` — I/O cost. Measurable NOW by extending route-trace to expand a real
+  w-ary, depth-D tree (each node → its own KV seq from the parent) and unioning all nodes'
+  captured expert sets. (Cheap on Qwopus.)
+- `E[m]` — accepted tokens per verify. **Requires a real draft** (target's own top-w is circular:
+  the true token is the argmax, so α≡1). Use the shipped **MTP head** (`blk.*.nextn`) as the draft;
+  measure acceptance of an MTP-drafted tree against the target's greedy continuation. This is the
+  substantial build; do it only after `union_total` confirms the byte budget is plausible.
+
+Build the batched tree-verify engine only if measured `(union_total, m)` clears the win condition
+AND the projected tok/s beats 0.9. Note: prior MTP failure was a width-1 chain (`m ≤ D`, and byte
+term `= D·single` with zero fixed-cost amortization modelled) — the tree + fixed-cost framing is
+the new, untested angle.
