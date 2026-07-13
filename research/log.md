@@ -345,7 +345,35 @@ top-16/32 hot/cold points on BOTH bytes and quality. The correct way to "spend b
 matter" is an **imatrix**: it allocates precision per weight-block *within* a uniform low-bit byte
 budget → full I/O win (all experts small, incl. hot) + quality protection on the important directions.
 So the real question is not hot/cold — it is *how low can UNIFORM expert precision go, imatrix-guided,
-at held quality?* Testing imatrix IQ3_XXS (3.06 bpw) and IQ2_XXS (2.06 bpw) vs the naive-Q2_K +8.6%.
-(imatrix computed on PTB; shares corpus with eval ⇒ upper bound on the imatrix benefit — a held-out
-corpus is needed before final numbers. imatrix showed 90–95% expert coverage: cold experts activate
-too rarely to fully calibrate, itself consistent with the Zipf.)
+at held quality?* (imatrix computed on PTB; shares corpus with eval ⇒ upper bound on the imatrix
+benefit. imatrix showed 90–95% expert coverage: cold experts activate too rarely to fully calibrate,
+itself consistent with the Zipf.)
+
+### i-quants (IQ2/IQ3) are the wrong tool ON THIS BOX — k-quants (Q3_K) are the deployable lever (2026-07-14)
+
+Tried imatrix IQ3_XXS/IQ2_XXS to push below Q3_K's 3.44 bpw. Two blockers make i-quants impractical
+here, independent of quality:
+1. **sm_120 GPU trap:** IQ2/IQ3 dequant miscompiles on Blackwell (CUDA 13.2, the known trap). IQ2/IQ3
+   experts cannot run on either GPU on this box — only on CPU. That's a real fragility (loses the
+   GPU big-batch expert path; complicates any future GPU-resident hot tier).
+2. **Requant cost:** imatrix i-quant requant of Qwopus did not finish in 8+ min (iterative per-block
+   search); the interrupted runs left corrupt GGUFs. Iterating i-quants at model scale is expensive,
+   and a 365 GB GLM i-quant requant would be a major job.
+
+**k-quants avoid both:** Q3_K/Q2_K compile fine on sm_120, run on CPU *and* GPU, need no imatrix, and
+requant fast (~110 s for Qwopus). Q3_K is already measured near-lossless (+1.7%). So the pragmatic,
+robust Thesis-C lever on this box is **uniform Q3_K experts** (or a Q3_K/Q4 mix), not i-quants.
+
+### Thesis C — bottom line and the honest GLM caveat
+
+Validated on Qwopus: uniform **Q3_K experts are near-lossless (+1.7% PPL) at ~1.9× fewer expert
+bytes** → up to ~1.9× tok/s where experts are the streamed bottleneck. This is the ONE surviving
+software lever (A and B are dead; it cuts `bytes_touched_per_token`, which greedy can't).
+
+BUT the target GLM-5.2 is **already UD-IQ4_XS (~4.25 bpw)** — most of the fat Qwopus had is already
+gone. GLM headroom is only IQ4→~Q3 (~1.2×) to IQ4→~Q2 (~1.8×), and as "Unsloth Dynamic" it is already
+a quality-aware mixed quant, so a naive uniform down-quant may lose more quality than Qwopus did.
+**The decisive GLM test (next):** requant GLM experts to Q3_K (k-quant, GPU-safe, fast-ish per split),
+measure PPL vs the IQ4_XS baseline and tok/s vs 0.9. If GLM Q3_K holds quality, it is a real ~1.2×
+(→~1.1 tok/s); the bigger multiples need going below IQ4 at held quality, which on an already-IQ4
+dynamic quant is the open question. Realistic expectation on THIS model: a modest but real win, not 2×.
