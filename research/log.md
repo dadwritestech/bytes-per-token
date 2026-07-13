@@ -143,6 +143,35 @@ the condition is roughly `(union_total/single − m) < 0.56·(m−1)` — i.e. t
 little more than the accepted path. This favors **narrow, deep** trees with high acceptance, NOT
 wide ones (wide inflates `union_total`). It is genuinely knife-edge → must be measured.
 
+### Cross-position (depth) reuse is partial, not zero (2026-07-13, from existing traces)
+
+`analysis/depth_union.py` unions the routed experts of D *consecutive committed* tokens
+(the rank-0/greedy row at each step). This is the depth analogue of breadth A(K):
+
+| D | GLM union(D) | GLM A_depth | reuse% | Qwopus A_depth | reuse% |
+|---|------|------|-----|------|-----|
+| 2 | 6.66 | 1.20 | 33% | 1.21 | 35% |
+| 5 | 13.02 | 1.54 | 44% | 1.58 | 46% |
+| 10| 22.53 | 1.78 | 48% | 1.97 | 55% |
+| 32| — | — | — | 3.26 | 72% |
+
+So a token's routed set is ~half-covered by the preceding ~9 tokens (GLM). This does NOT
+contradict the inherited "cache ~3.4 GB/token" fact — steady-state cold-miss stays high, but
+short-window overlap is real. **Consequence:** a tree's `union_total` is *below* the
+levels-independent `Σ_levels union(width)` bound; cross-level cache hits (~48% on GLM) shrink it.
+
+### Corrected win condition — count COLD-MISS bytes (both greedy and tree cache experts)
+
+Greedy over m tokens reads `union_depth(m)` cold (each expert once, then cached), not `m·single`.
+A tree-verify producing m accepted reads `union_tree(w,D)` cold. Extra I/O is only the *new*
+experts the rejected siblings pull in (mitigated by breadth reuse). Corrected:
+```
+WIN  ⟺  (union_tree(w,D) − union_depth(m))·byte_time  <  (m−1)·t_fix
+```
+Because cross-level reuse pulls `union_tree` well under the pessimistic `D·union(w)`, the byte
+budget is looser than the earlier estimate — Thesis A is back to **genuinely uncertain**, so the
+measurement is worth doing. Both `union_tree(w,D)` and `E[m]` must be measured (below).
+
 ### Next decisive experiment — Thesis A2 (tree acceptance vs union-I/O)
 
 Two measured quantities feed the condition above, as a function of tree shape (width w, depth D):
