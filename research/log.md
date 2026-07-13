@@ -297,3 +297,29 @@ kernel trap) for Q6_K vs IQ3 vs IQ2 on a fixed corpus (wikitext-2). Then the hot
 while keeping most of the byte saving, since cold experts are rarely routed. Verdict rule: if
 expert-IQ3 holds PPL within a few % it is an immediate ~2× lever; if only the hot/cold split holds,
 quantify the byte/quality trade and size the split from the existing Zipf profile.
+
+### Thesis C RESULT — low-bit experts hold quality; C SURVIVES (2026-07-13)
+
+k-quants (Q2_K/Q3_K, not the sm_120-trapped i-quants) let me test without an imatrix. Requant
+Qwopus experts only (`--tensor-type ffn_*_exps=...`), perplexity on PTB (24×512, experts on GPU —
+k-quants compile fine on Blackwell):
+
+| Qwopus experts | size | BPW | PPL | ΔPPL |
+|---|---|---|---|---|
+| Q6_K (baseline) | 29.2 GB | 6.58 | 10.93 ± 0.36 | — |
+| **Q3_K** | 16.3 GB | 3.67 | **11.12 ± 0.37** | **+1.7% (within error bars)** |
+| Q2_K | 12.3 GB | 2.92 | 11.87 ± 0.40 | +8.6% |
+
+**Q3_K experts are near-lossless at ~2× fewer expert bytes.** This is the FIRST surviving thesis:
+a direct `bytes_touched_per_token` cut that the streamer can't already do. Q2_K trades +8.6% PPL for
+~2.5× — the hot/cold split (hot Q4, only Zipf-cold tail Q2) should recover most of that.
+
+**Caveat — magnitude won't transfer 1:1 to GLM.** Qwopus started at Q6_K (6.6 bpw = big headroom);
+GLM is ALREADY UD-IQ4_XS (~4.25 bpw). GLM headroom: IQ4→~Q3 (~1.4× fewer bytes ⇒ ~1.2 tok/s) or
+IQ4→~Q2 (~1.8× ⇒ ~1.6 tok/s) — still beats 0.9, but GLM needs its own PPL measurement, and being
+"Unsloth Dynamic" (already hot/cold mixed) some win may be baked in. (PTB is small/noisy, ±0.36;
+tighten with more chunks / wikitext before final GLM numbers.)
+
+**Status: Thesis C ALIVE — the one lever that works.** Next: (1) GLM expert-Q3/Q2 PPL on the target
+(needs a GLM requant, or imatrix i-quants); (2) hot/cold split sized from the Zipf profile to push
+past IQ4 at held quality; (3) then the mixed-precision streamer + measured tok/s A/B vs 0.9.
