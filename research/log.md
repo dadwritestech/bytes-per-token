@@ -98,10 +98,14 @@ evaluations. A(K)=1 ⇒ no reuse (dead); A(K)≫1 ⇒ strong reuse (alive).
 A(K) is **still climbing at K=16** (not saturated); mid-layers reuse most. Per-prompt A(16):
 prose 3.95, science 3.59, code 3.01 — consistent.
 
-**GLM-5.2 (top-4, 256 exp, group-routed, MLA), streamer 12GB, K=8 smoke:** A(8)≈2.1, same
-climbing shape, matching Qwopus's A(8)=2.4. (Clean K=16 GLM run in progress.) Two very different
-models giving the same law ⇒ breadth reuse is a *structural* property of MoE routing, like the
-neuron keep-rate finding.
+**GLM-5.2 (top-4, 256 exp, group-routed, MLA), streamer 12GB, K=16, 10 steps × WARM 4,
+750 groups:** A(4)=1.64, A(8)=2.13, **A(16)=2.69** (union 23.75/layer vs 64), overlap 67%,
+still climbing; mid-layers reuse most (A_mid 2.86). Lower than Qwopus because top-4 has less
+overlap headroom than top-8, but the same climbing law. Two very different models giving the same
+shape ⇒ breadth reuse is a *structural* property of MoE routing, like the neuron keep-rate finding.
+
+Per-level I/O model for the tree engine: a 16-wide sibling level on GLM costs ≈ union(16)/n_used =
+23.75/4 ≈ **5.9× one token's expert bytes, not 16×**. That factor is what Thesis A2 plugs in.
 
 **Verdict: Thesis A's first gate is PASSED — union(K) grows far sub-linearly (≈K^0.5).** A breadth
 of candidate tokens sharing a context is I/O-cheap: one expert read serves ~3.6–4 candidate
