@@ -377,3 +377,42 @@ a quality-aware mixed quant, so a naive uniform down-quant may lose more quality
 measure PPL vs the IQ4_XS baseline and tok/s vs 0.9. If GLM Q3_K holds quality, it is a real ~1.2×
 (→~1.1 tok/s); the bigger multiples need going below IQ4 at held quality, which on an already-IQ4
 dynamic quant is the open question. Realistic expectation on THIS model: a modest but real win, not 2×.
+
+### Thesis C on target GLM — RESULT: no realizable win on this box (2026-07-14)
+
+Requant done (experts→Q3_K, non-experts→Q8_0, keep-split, to E:). Measured facts:
+- **GLM source is 3.88 bpw** (even more aggressive than the ~4.25 estimate — UD-IQ4_XS is already near
+  the frontier). Output 3.57 bpw ⇒ only ~1.08× smaller overall; the *expert* bpw went ~4.0→3.5, so
+  streamed-byte reduction is **~1.15× at best**. The headroom is essentially gone.
+- **Drive confound, unfixable here:** the 314 GB Q3_K model only fits on **E: (WD SN570, DRAM-less)**;
+  D: (fast SN7100, where the 0.9 baseline was measured) has 81 GB free. E:'s poor random-fault
+  latency (the same drive the −22% striping dead-end blamed) made even *loading* take >180 s and a
+  decode run exceed 8 min. Streaming Q3_K's ~1.15× fewer bytes from a much slower drive nets out
+  worse, not better. A fair D:-vs-D: test is impossible without freeing ~270 GB on D:.
+
+⇒ **Thesis C is a real technique (proven +1.7% PPL / ~1.9× on Qwopus) but delivers ~nothing on the
+actual target on this box:** GLM ships already-quantized to 3.88 bpw (no byte headroom) and the
+requant can only live on the slow drive. Going below Q3 (Q2 ~2.6 bpw, ~1.5×) is the only path to a
+real multiple, but that is a below-3.88-bpw quant of an already-aggressive dynamic quant — likely a
+real quality hit, and still drive-blocked. PPL-on-target not run (streamed from E: it is ~30 min+ and
+does not change the speed verdict).
+
+## PROJECT CONCLUSION (2026-07-14) — 0.9 tok/s is near the floor for GLM-5.2 on this box
+
+All three roadmap theses were driven to decisive verdicts this session:
+- **A (speculative tree I/O amortization): DEAD.** Greedy is I/O-optimal; any branching tree reads
+  2.6–3.3× its accepted path and loses even at perfect acceptance. Closes the whole speculative family.
+- **B (prompt-conditioned resident pin): DEAD.** The reactive LRU streamer already ≥ any prompt-
+  predicted static pin, and per-prompt working sets (38–67% of experts) don't fit 31 GB RAM anyway.
+- **C (low-bit experts): REAL but spent on this target.** ~1.9× on a fat (Q6) model; but GLM-5.2 is
+  already 3.88 bpw, so ~1.15× headroom, erased by having to stream from the slow drive.
+
+Root cause is the governing equation itself: `tok/s ≈ bandwidth / bytes_per_token`. The inherited
+direct-read streamer already maximized *bandwidth* (fast drive, deep-QD bursts) and *bytes_per_token*
+is fixed by (a) top-4 routing and (b) a model that ships pre-quantized to 3.88 bpw. There is no
+software slack left on either term for this (model, box) pair. **Real further gains require hardware**
+(a second *fast+large* NVMe so the whole model streams from D:-class media / RAID for more bandwidth;
+or ≥64 GB RAM so a large page-cache resident fraction cuts cold-miss bytes) **or a less pre-quantized
+/ smaller model.** The one remaining *software* lever is shaving `t_fix` (0.36 s/token per-layer
+CPU↔GPU sync + sampling) — it speeds up the existing 0.9 path directly (~+19% if halved) and is the
+only thing left worth building; see "Where next".
