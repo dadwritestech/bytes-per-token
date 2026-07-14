@@ -1,11 +1,11 @@
-# A week against the wall: running a 754B MoE from NVMe until the physics said stop
+# Three days against the wall: running a 754B MoE from NVMe until the physics said stop
 
 I wanted GLM-5.2 — 754 billion parameters, 365 GB on disk at IQ4_XS — running at usable
 speed on my desktop. The desktop has a 5080, a 5060 Ti, 31 GB of RAM and one fast NVMe.
 That's 63 GB of fast memory for a 365 GB model. Every decoded token has to find its routed
 expert weights somewhere, and for a model this size, "somewhere" is mostly the SSD.
 
-This is the write-up of that week: a real 4.5x that took the model from 0.2 to 0.9 tok/s,
+This is the write-up of three very dense days: a real 4.5x that took the model from 0.2 to 0.9 tok/s,
 then a series of measurements that killed every remaining idea I had, one by one, until
 what was left was a proof that 0.9 is the floor — and a 21.6x that had been sitting in
 plain sight the whole time. The dead ends are the useful part. I've kept them all.
@@ -24,7 +24,7 @@ At top-4 routing, one GLM token touches about 3.4 GB of expert weights. That fig
 experts so fast that the cache can't get traction. My drive sustains 5.7 GB/s at deep
 queue depth. Divide: 1.55 tok/s, ceiling, before a single matmul runs.
 
-I did not fully believe that division at the start of the week. The rest of this article
+I did not fully believe that division on day one. The rest of this article
 is the process of coming to believe it.
 
 ## Part 1 — the 4.5x that was actually there
@@ -70,7 +70,7 @@ continuations of the same context and measured how the union grows:
 ![breadth reuse A(K)](figs/fig2_reuse.png)
 
 Sibling candidates genuinely share experts. The amortization factor A(K) grows like √K,
-and — this was the finding that made the week feel worthwhile — the *same law* shows up on
+and — this was the finding that made the whole exercise feel worthwhile — the *same law* shows up on
 two unrelated models (a 35B top-8 and the 754B top-4). Reuse across siblings is structure,
 not accident.
 
@@ -170,7 +170,7 @@ in the decode loop:
 
 Same GLM family. Same machine. Same day. The equation had been saying this since the
 first division — 3.4 GB over a 5.7 GB/s pipe versus 5 GB of active weights over VRAM and
-RAM bandwidth — and it took a week of measurements to stop arguing with it.
+RAM bandwidth — and it took three days of measurements to stop arguing with it.
 
 ## What transfers
 
