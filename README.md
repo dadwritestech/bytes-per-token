@@ -46,7 +46,7 @@ at 19.5 tok/s the moment weights are resident. **The negative results are the pr
 - [`tools/`](tools) — benchmark scripts; the `route-trace` oracle instrument (a
   `ggml_backend_sched_eval_callback` that dumps per-layer routed-expert sets) lives in the
   companion llama.cpp fork, branch `moe-tiering`.
-- [`KICKOFF.md`](KICKOFF.md) — the original project brief, kept verbatim.
+- [`docs/BRIEF.md`](docs/BRIEF.md) — the starting state: hardware, inherited baseline, and the three hypotheses as originally posed.
 
 Hardware: RTX 5080 16 GB + RTX 5060 Ti 16 GB, 31 GB RAM, WD SN7100 NVMe (~5.3 GiB/s
 direct reads). Models: GLM-5.2 754B (UD-IQ4_XS / UD-Q2_K_XL), Qwopus3.6-35B-A3B (proxy),
