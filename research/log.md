@@ -473,3 +473,39 @@ or ≥64 GB RAM so a large page-cache resident fraction cuts cold-miss bytes) **
 / smaller model.** The one remaining *software* lever is shaving `t_fix` (0.36 s/token per-layer
 CPU↔GPU sync + sampling) — it speeds up the existing 0.9 path directly (~+19% if halved) and is the
 only thing left worth building; see "Where next".
+
+## Postscript — the 10 tok/s question (2026-07-14)
+
+Asked directly: can GLM-5.2 hit **10 tok/s** on this box with a sufficiently clever engine?
+Answer from the measured constants, not from taste: **no — it violates two independent
+hardware walls, either of which alone caps well below 10.**
+
+10 tok/s = a 100 ms/token budget. Against the measured terms:
+
+| requirement at 10 tok/s | this box delivers | shortfall |
+|---|---|---|
+| storage: 3.4 GB/tok × 10/s = **34 GB/s sustained** | SN7100 deep-QD ≈ 5.7 GB/s (PCIe4 x4 raw ≈ 7.9) | **6× — above the bus, not just the drive** |
+| or: bytes/tok ≤ **0.57 GB** at drive speed | measured floor 3.4 GB (post-LRU miss traffic) | **6× fewer bytes needed** |
+| and: non-I/O cost ≤ 100 ms | `t_fix` = **360 ms**, thread-saturated, intrinsic CPU-expert cost | **3.6× over — with zero disk bytes** |
+
+The second row is why no *invention* closes the gap — every byte-cutting category was measured:
+quant headroom 1.15× (ships at 3.88 bpw); activation sparsity refuted (uniform 0.5 keep-rate);
+top-k already cut to 4; speculative amortization DEAD (greedy is I/O-optimal, A2); residency DEAD
+(working set 38–67% of experts ≫ 31 GB, B). Their product cannot reach 6× because they don't stack
+— they're alternatives fighting over the same 3.4 GB. And the third row is the deeper wall: **even
+with the entire model magically in RAM, the box caps at 1/0.36 ≈ 2.8 tok/s** (measured disk-free
+via Qwopus-in-RAM scaling), because 754B-scale expert matmuls on 4 saturated cores cost what they
+cost. Breaking THAT wall means expert matmuls in VRAM ⇒ ~240 GB of VRAM ⇒ different hardware class.
+
+One family was never tested: **cache-biased routing** (bend top-k toward RAM-resident experts when
+gate margins are small — trades fidelity for misses). Honest ceiling: even at 90% forced hit-rate
+it only removes the I/O term → converges on the same 2.8 tok/s `t_fix` wall, now with routing
+infidelity on a model whose measured working set resists confinement. It is a ~2× idea with a
+quality bill, not a 10× idea. Logged so the next session doesn't mistake it for an open door.
+
+What DOES honestly deliver ≥10 tok/s "GLM on this box": a GLM-family model whose active weights
+fit RAM+VRAM. Evidence already in this log: Qwopus-35B-A3B does **34 tok/s** with experts on CPU,
+103 all-GPU. An Air-class GLM (~100B, ~12B active) at ~3.5 bpw ≈ 45 GB spans the 32 GB VRAM +
+31 GB RAM of this box with weights resident — projected high single digits to low teens, measurable
+in an afternoon. `tok/s = bandwidth / bytes_per_token` is not a slogan; 10 tok/s requires the
+numerator of RAM/VRAM, and only a smaller sibling gets its bytes there.
