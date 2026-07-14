@@ -399,7 +399,7 @@ does not change the speed verdict).
 
 ### Thesis C — DIRECT on-target measurement: UD-Q2_K_XL on fast D: = 0.9 tok/s, NO gain (2026-07-14)
 
-After the user re-provisioned disk, downloaded Unsloth's pre-made **UD-Q2_K_XL** (254 GB, imatrix-
+After re-provisioning disk space, I downloaded Unsloth's pre-made **UD-Q2_K_XL** (254 GB, imatrix-
 tuned k-quant, 0.70× the deleted IQ4_XS's 365 GB) to the fast **D:** SN7100 and ran the real decode
 A/B (streamer 12 GB, top-4, cold):
 
@@ -425,7 +425,7 @@ if you accept quality loss on the hot path; the off-the-shelf quality-preserving
 
 ## PROJECT CONCLUSION (2026-07-14) — 0.9 tok/s is near the floor for GLM-5.2 on this box
 
-All three roadmap theses were driven to decisive verdicts this session:
+All three roadmap theses were driven to decisive verdicts:
 - **A (speculative tree I/O amortization): DEAD.** Greedy is I/O-optimal; any branching tree reads
   2.6–3.3× its accepted path and loses even at perfect acceptance. Closes the whole speculative family.
 - **B (prompt-conditioned resident pin): DEAD.** The reactive LRU streamer already ≥ any prompt-
