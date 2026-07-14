@@ -10,3 +10,4 @@ __pycache__/
 *.pyc
 # but DO keep small curated data
 !prompts/*.txt
+writeup/REDDIT.md
