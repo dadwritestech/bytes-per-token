@@ -542,3 +542,34 @@ llama-cli** (stuck in CUDA teardown, `taskkill /F` → WAIT_TIMEOUT) pinning ~18
 plus ~13 GB of CUDA page-locked host memory that is **invisible to RSS/Task Manager accounting**
 (`cudaHostAlloc` pins outside working-set). If RAM goes missing with no visible consumer, check
 `nvidia-smi --query-compute-apps` for ghosts before trusting process lists.
+
+## Thesis D — cross-expert redundancy: measured DEAD; experts are orthogonal (2026-07-15)
+
+Proposed novel quant family: if a layer's 256 experts share structure (base + low-rank or
+sparse delta per expert), stream only deltas and hold the base resident — a byte cut on the
+exact term that matters. No shipped format exploits cross-expert redundancy; nobody appears
+to have published this spectrum for a trained routed MoE. Decisive experiment before any
+format design (`analysis/expert_redundancy.py`): dequantize Qwopus expert tensors (3 layers
+× gate/up/down, 256 experts each), measure pairwise |cos|, centered-gram eigenspectra
+(shared rank-r subspace energy), and delta-entropy vs a random-orthogonal baseline.
+Verdict rule fixed in the script before running: ALIVE iff E@r64 ≥ 50% or ≥ 0.5 bits/weight.
+
+| metric | measured (9 tensors) | random-orthogonal baseline |
+|---|---|---|
+| mean pairwise cos | 0.001–0.012 | ~0.006 |
+| shared-subspace energy @ rank 64 | 26.1–29.6% | 25.1% (= 64/255) |
+| delta-entropy saving | 0.003–0.011 bits/weight | 0 |
+
+**Trained routed experts are statistically indistinguishable from mutually random-orthogonal
+matrices.** The rank-64 shared subspace holds 1–4 points more energy than pure chance; the
+mean-delta saves ~0.01 bits of the ~3.9 we stream. There is no shared base, no cluster
+structure worth a codebook, no delta representation worth an engine. The whole cross-expert
+compression family (base+delta, expert clustering, shared codebooks) dies on one number —
+and this also *explains* the ecosystem: per-expert-independent quant formats aren't a lazy
+convention, they're optimal, because specialization drives experts to orthogonality. The
+bits in a trained MoE's experts are irreducibly their own. Consistent with (and a cleaner
+statement of) the uniform-0.5 keep-rate result: MoE weights carry no exploitable redundancy
+along ANY axis we've measured — activation, neuron, or expert identity.
+
+Cost of the verdict: one script, one run, ~3 minutes of compute. The format + engine it
+would have justified: weeks. The method is the product.
