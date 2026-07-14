@@ -1,72 +1,83 @@
-# I spent a week trying to make a 754B MoE fast on one consumer box. Here's the 4.5×, the wall, and the 21× that was hiding behind an honest equation.
+# A week against the wall: running a 754B MoE from NVMe until the physics said stop
 
-**TL;DR:** We took GLM-5.2 (754B MoE, 365 GB) from 0.2 → 0.9 tok/s on a 2-GPU consumer box
-by streaming experts from NVMe — then *measured* every remaining idea (speculative trees,
-predictive caching, lower-bit experts) to a verdict instead of vibing, and proved 0.9 is the
-hardware floor for that model on that box. The same box runs GLM-4.5-Air at **19.5 tok/s**
-the moment weights are resident. The negative results are the useful part; the equations
-that killed each idea fit on a napkin.
+I wanted GLM-5.2 — 754 billion parameters, 365 GB on disk at IQ4_XS — running at usable
+speed on my desktop. The desktop has a 5080, a 5060 Ti, 31 GB of RAM and one fast NVMe.
+That's 63 GB of fast memory for a 365 GB model. Every decoded token has to find its routed
+expert weights somewhere, and for a model this size, "somewhere" is mostly the SSD.
 
-## The box
+This is the write-up of that week: a real 4.5x that took the model from 0.2 to 0.9 tok/s,
+then a series of measurements that killed every remaining idea I had, one by one, until
+what was left was a proof that 0.9 is the floor — and a 21.6x that had been sitting in
+plain sight the whole time. The dead ends are the useful part. I've kept them all.
 
-- RTX 5080 16 GB + RTX 5060 Ti 16 GB (32 GB VRAM total), 31 GB usable RAM
-- WD_BLACK SN7100 NVMe: **~5.3 GiB/s** sustained direct reads (NO_BUFFERING, deep queue)
-- Target model: GLM-5.2, 754B params, 256 experts/layer, ~92 layers, UD-IQ4_XS = **365 GB**
-- That's ~6× the box's combined fast memory. Every decoded token must pull its routed
-  expert weights from *somewhere*.
+Everything here is measured on the box above. The repo has the dated research log,
+the analysis scripts, and the traces.
 
-## The one equation that governs everything
+## One division governs everything
 
 ```
 tokens/sec  ≈  effective_bandwidth / bytes_touched_per_token
 ```
 
-Everything below is a fight over the two terms. At top-4 routing, one GLM token touches
-**~3.4 GB** of expert weights (steady-state cache-miss traffic after a 12 GB RAM cache does
-its best). Ceiling from disk alone: 5.7 GB/s ÷ 3.4 GB = **1.55 tok/s**, before a single
-matmul runs. Hold that thought.
+At top-4 routing, one GLM token touches about 3.4 GB of expert weights. That figure is
+*after* a 12 GB RAM cache does its best — consecutive tokens churn through different
+experts so fast that the cache can't get traction. My drive sustains 5.7 GB/s at deep
+queue depth. Divide: 1.55 tok/s, ceiling, before a single matmul runs.
 
-## Part 1 — Earning 4.5×: 0.2 → 0.9 tok/s
+I did not fully believe that division at the start of the week. The rest of this article
+is the process of coming to believe it.
+
+## Part 1 — the 4.5x that was actually there
 
 ![decode-speed trajectory](figs/fig1_trajectory.png)
 
-Four changes, each measured before the next was attempted (llama.cpp fork, experts on CPU
-path, attention on GPU):
+Four changes survived measurement, in a llama.cpp fork with experts on the CPU path and
+attention on the GPUs:
 
-1. **Expert prefetch** (0.2 → 0.3): once the router picks experts, issue their reads
-   immediately instead of faulting lazily mid-matmul.
-2. **Top-4 routing override** (0.3 → 0.6): the model ships top-8; top-4 halves
-   bytes/token for a tolerable quality cost. Bytes are everything, so this is ~2×.
-3. **Zipf-guided RAM pinning** (0.6 → 0.9): profiled per-(layer, expert) routing counts.
-   Expert usage is *strongly* Zipfian — on GLM, the top **1.7%** of expert slots take
-   **25%** of all routings. Pinning the hot set (8 GB budget) is +50%.
-4. **Direct-read NVMe streamer** (same 0.9, much more robust): replace page-fault I/O with
-   NO_BUFFERING + overlapped deep-queue reads into a reactive LRU. This maxes the
-   *bandwidth* term: 3.9 GiB/s sustained bursts during decode.
+**Prefetch** (0.2 → 0.3). The router picks experts a few microseconds before the matmul
+needs them. Issuing reads at pick time instead of faulting lazily is worth 50% on its own.
 
-Also tried and reverted, with numbers: dual-NVMe striping (−22%: the second drive's
-random-fault latency poisons the pipeline), fused gate/up/down slab reads (−22%: locality
-beats queue depth), MTP/lookahead speculative decoding (net loss — foreshadowing).
+**Top-4 routing** (0.3 → 0.6). The model ships top-8. Overriding to top-4 halves
+bytes-per-token, and bytes are everything, so this is close to a clean 2x. Quality holds
+up well enough for the workloads I care about.
 
-## Part 2 — Three theses, three measured verdicts
+**Zipf-guided pinning** (0.6 → 0.9). I profiled per-(layer, expert) routing counts and the
+distribution turned out to be brutally Zipfian: on GLM, the top 1.7% of expert slots take
+25% of all routings. Pinning the hot set into 8 GB of locked RAM is +50%.
 
-At 0.9 tok/s, ~64% of each token's wall-clock is pure disk wait; the rest (`t_fix ≈ 0.36 s`)
-is CPU expert matmul + per-layer CPU↔GPU sync. We formulated the three remaining idea
-families as falsifiable theses and built the cheapest decisive experiment for each.
+**A real streamer** (robust 0.9). Replacing mmap page faults with NO_BUFFERING,
+deep-queue-depth direct reads into a reactive LRU. Same tok/s as pinning, far more stable,
+and it sustains 3.9 GiB/s during decode — the drive is genuinely near its limit.
 
-### Thesis A: amortize I/O across a speculative tree — DEAD, and the reason generalizes
+Things I tried and reverted, with their prices: striping across a second NVMe (−22%; the
+slower drive's random-fault latency poisons the whole pipeline), fusing gate/up/down reads
+into one burst (−22%; locality beats queue depth), and MTP speculative decoding (a net
+loss that foreshadows everything in Part 2).
 
-The seductive idea: one token costs 3.4 GB of reads, so evaluate *many* candidate tokens
-per read. We instrumented the model to dump per-layer routed-expert sets for K candidate
-continuations of the same context, and measured the union:
+## Part 2 — killing my own ideas
+
+At 0.9 tok/s, 64% of each token is disk wait. The remaining 0.36 s — call it `t_fix` — is
+CPU expert matmul plus per-layer CPU↔GPU sync. I had three ideas left and a rule inherited
+from the start of the project: every idea gets a cheap decisive experiment before it gets
+engine code. The rule turned out to be the most valuable thing in the repo.
+
+### Speculative decoding, the whole family, is dead here
+
+The seductive version: a token costs 3.4 GB of reads, so evaluate many candidate tokens
+per read. I instrumented the fork to dump per-layer routed-expert sets for K candidate
+continuations of the same context and measured how the union grows:
 
 ![breadth reuse A(K)](figs/fig2_reuse.png)
 
-Sibling candidates genuinely share experts — the union grows ≈ √K, on two very different
-models. Reuse is real! But now write down what a speculative tree must actually beat.
-Greedy decoding reads **exactly** the experts it uses — greedy is I/O-optimal. A tree
-verify that accepts `m` tokens wins only if its extra bytes cost less than the fixed
-per-step cost it amortizes:
+Sibling candidates genuinely share experts. The amortization factor A(K) grows like √K,
+and — this was the finding that made the week feel worthwhile — the *same law* shows up on
+two unrelated models (a 35B top-8 and the 754B top-4). Reuse across siblings is structure,
+not accident.
+
+Then I wrote down what a speculative tree actually has to beat, and the finding stopped
+feeling so good. Greedy decode reads exactly the experts it uses. Greedy is I/O-optimal.
+A tree verify that accepts `m` tokens wins only if its extra bytes cost less than the
+fixed cost it amortizes:
 
 ```
 (union_tree − union_greedy(m)) · t_byte  <  (m − 1) · t_fix
@@ -74,79 +85,82 @@ per-step cost it amortizes:
 tolerance:  R* = 1 + t_fix/t_io = 1 + 0.36/0.71 ≈ 1.51
 ```
 
-Measured on real trees (2×4, 4×2, 3×3, 2×6): every shape reads **R ≈ 2.8–3.3×** its
-accepted path — double the budget — so every shape loses *even at perfect acceptance*
-(the required accepted depth exceeds the tree's own depth). No draft model, however good,
-can rescue it: the byte budget is blown before acceptance enters the math. This closes
-MTP, Medusa-style trees, and lookahead **as a family** for the disk-streamed regime, and
-tells you exactly when they come back: when `t_io/t_fix` drops ~2× (i.e., weights mostly
-in fast memory — which contradicts the premise).
+I measured real trees — 2×4, 4×2, 3×3, 2×6. Every shape reads 2.8–3.3x its accepted path.
+Over budget by a factor of two, *at perfect acceptance*. The required accepted depth
+exceeds the tree's own depth, which no draft model can deliver because it's impossible.
+Acceptance never even enters the verdict; the byte budget is spent first. That closes MTP,
+Medusa-style trees, and lookahead as a family for the disk-bound regime — and tells you
+exactly when they return: when `t_io/t_fix` falls about 2x, i.e. when the weights mostly
+live in fast memory. Which contradicts the premise.
 
-### Thesis B: predict the working set from the prompt — DEAD
+### Predicting the working set from the prompt loses to a dumb cache
 
-Maybe each *conversation* uses a small predictable expert subset: detect it during prompt
-processing, pin it, generate from fast memory. Measured coverage of generation-time expert
-touches at a pin budget of H experts/layer:
+I was fairly confident in this one. Each conversation surely uses some stable expert
+subset — detect it during prompt processing, pin it, generate from fast memory.
 
 ![coverage comparison](figs/fig3_coverage.png)
 
-Two kills: (1) the per-prompt working set is huge and unsaturated — one 96-token GLM
-generation touches **38% of all experts** and climbing, so no 31 GB pin can hold it;
-(2) the prompt carries real signal (27% ≫ 3% random) but *less* than what a dumb reactive
-LRU converges to on its own (42%), and the LRU nearly matches the oracle at feasible
-budgets. The streamer you already have is at the caching frontier; prediction adds bytes
-it was already going to cache.
+Wrong twice. First, the per-prompt working set is enormous and doesn't saturate: one
+96-token generation touches 38% of all experts and is still climbing when it ends (45–67%
+on the proxy model). No 31 GB pin can hold that. Second, the prompt's signal is real but
+weak: a prompt-predicted pin covers 27–44% of generation-time expert touches, while the
+reactive LRU the streamer already has covers 42–62% and sits nearly on top of the oracle
+at every feasible budget. The cache you get for free is already at the frontier.
+Prediction adds bytes it was going to cache anyway.
 
-### Thesis C: lower-bit experts — REAL, and it still couldn't save this target
+### The null result that actually annoyed me
 
-The only lever greedy can't already do: shrink `bytes_touched_per_token` itself.
+One lever remained that greedy can't already do: shrink bytes-per-token itself with
+lower-bit experts.
 
 ![quant quality vs bytes](figs/fig4_quant.png)
 
-Q3_K experts are near-lossless (+1.7% PPL, inside error bars) at ~2× fewer expert bytes —
-on a model that ships at Q6. But the 754B target ships at **3.88 bpw** (Unsloth Dynamic
-IQ4_XS); its headroom is ~1.15×. Worse — and this is the finding worth stealing — we
-downloaded Unsloth's UD-Q2_K_XL of the 754B (0.70× the file size!) and measured decode:
-**0.9 tok/s, unchanged, streaming the same ~3.4 GB/token.** Quality-preserving dynamic
-quants protect the *hot* experts, and the hot experts are precisely the bytes streamed
-every token. **File size is not the variable; streamed bytes/token is.** A quant that
-halves the file without touching hot experts does nothing for tok/s.
+On a fat Q6 proxy model this works beautifully — Q3_K experts cost +1.7% perplexity,
+inside the error bars, at ~2x fewer expert bytes. So I cleared 254 GB of disk and
+downloaded Unsloth's UD-Q2_K_XL of the 754B: 0.70x the file size of my IQ4_XS baseline.
 
-Bonus inversion: the folk wisdom "keep hot experts high-precision, crush the cold ones"
-is exactly backwards for I/O. Effective streamed bpw = coverage-weighted bpw, dominated
-by hot experts. If you want speed, it's the hot experts you must shrink — which is
-exactly the quality trade the good quants refuse.
+Identical 0.9 tok/s. The streamer's own byte accounting showed the same ~3.4 GB streamed
+per token as before.
 
-## Part 3 — The two walls (or: why "invent a clever engine" stops working)
+The explanation took a while to accept. Dynamic quants earn their quality by protecting
+the *hot* experts — and the hot experts are precisely the bytes streamed on every token,
+because being streamed often is what hot means. The 130 GB of savings sat in cold experts
+I rarely read. Worse, the folk wisdom "keep hot experts high-precision, crush the cold
+ones" is exactly backwards for I/O: effective streamed bits-per-weight is coverage-
+weighted, so it's the hot experts you'd need to shrink, and that's precisely the quality
+trade the good quants exist to refuse. File size is not the variable. Streamed
+bytes-per-token is. My own projection had used the total-size ratio and it was wrong.
 
-Could *any* engine hit 10 tok/s (100 ms/token) with this model on this box?
+## Part 3 — the two walls
+
+Could a sufficiently clever engine hit 10 tok/s — a 100 ms/token budget — with this model
+on this box? Write down what it requires:
 
 ```
-Wall 1 (bus):      3.4 GB/token × 10 tok/s = 34 GB/s sustained from storage
-                   — 6× the drive, and above PCIe 4.0 x4 itself.
-Wall 2 (compute):  t_fix = 0.36 s/token of CPU expert matmul, thread-saturated
-                   at 4 cores  ⇒  even with the model magically ALL in RAM:
-                   1 / 0.36 ≈ 2.8 tok/s ceiling.
+Wall 1 (bus):      3.4 GB/token × 10 tok/s = 34 GB/s sustained from storage.
+                   Six times the drive. More than the PCIe 4.0 x4 slot carries at all.
+Wall 2 (compute):  t_fix = 0.36 s/token of CPU expert matmul, thread-saturated at
+                   4 cores. With the model magically ALL in RAM: 2.8 tok/s. Still.
 ```
 
 ![the two walls](figs/fig5_walls.png)
 
-Every byte-cutting lever is measured and spent (quant ~1.15×, sparsity refuted at uniform
-0.5 keep-rate, top-k already cut, speculation dead, residency dead) — and they don't
-stack; they compete for the same 3.4 GB. And even a perfect I/O engine parks at Wall 2,
-because 754B-scale expert matmuls on consumer cores cost what they cost. Breaking Wall 2
-means expert matmuls in VRAM ⇒ ~240 GB of VRAM ⇒ a different hardware class. That's not
-pessimism; it's two independent inequalities.
+The byte-cutting levers are measured and spent — quant headroom 1.15x on a model that
+ships at 3.88 bpw, activation sparsity refuted (uniform 0.5 keep-rate, no structure),
+top-k already cut, speculation dead, residency dead. They don't stack; they compete for
+the same 3.4 GB. And a perfect I/O engine still parks at Wall 2, because 754B-scale expert
+matmuls on consumer cores cost what they cost. Breaking Wall 2 means expert matmuls in
+VRAM, which means ~240 GB of VRAM, which means a different machine. Two independent
+inequalities. Beat one and the other catches you.
 
-## Part 4 — The 21× that was always available
+## Part 4 — the 21.6x that was always available
 
-The governing equation says the only remaining move is to change the numerator's *tier*:
-get the active weights into silicon that feeds the cores. On this box that means a model
-whose weights fit 32 GB VRAM + 31 GB RAM — an Air-class sibling.
+The equation permits exactly one remaining move: change which tier the bytes live in.
+On this box that means a model whose weights fit 32 GB VRAM + 31 GB RAM.
 
-GLM-4.5-Air (106B total, ~12B active), UD-Q2_K_XL, 47.4 GB, fully resident (~60% of
-experts packed into VRAM by llama.cpp's auto-fit, the rest committed to RAM, zero disk in
-the decode loop):
+GLM-4.5-Air — 106B total, ~12B active, 47 GB at Q2_K_XL — fully resident, about 60% of
+its experts packed into VRAM by llama.cpp's auto-fit, the rest committed to RAM, zero disk
+in the decode loop:
 
 | | GLM-5.2 754B, streamed | GLM-4.5-Air 106B, resident |
 |---|---|---|
@@ -154,26 +168,29 @@ the decode loop):
 | prompt eval | 1.1 tok/s | 27–29 tok/s |
 | cold load | >60 s | ~20 s |
 
-Same GLM family, same box, same day: **21.6×**. Not from a cleverer engine — from
-respecting the equation. 3.4 GB/token over a 5.7 GB/s pipe versus ~5 GB of active weights
-per token over VRAM/RAM bandwidth. The bytes just live in the right place now.
+Same GLM family. Same machine. Same day. The equation had been saying this since the
+first division — 3.4 GB over a 5.7 GB/s pipe versus 5 GB of active weights over VRAM and
+RAM bandwidth — and it took a week of measurements to stop arguing with it.
 
-## What I'd tell you to steal
+## What transfers
 
-1. `tok/s ≈ bandwidth / bytes_per_token` — compute both terms for YOUR setup before
-   building anything. If required bandwidth exceeds your bus, no scheduler saves you.
-2. **Greedy decode is I/O-optimal.** Speculative anything must beat
-   `R* = 1 + t_fix/t_io` in byte overhead. In a disk-bound regime it can't.
-3. **Model file size ≠ streamed bytes.** Quality-preserving quants shrink the experts you
-   rarely read. Measure bytes/token, not gigabytes on disk.
-4. A reactive LRU over expert slabs is ~at the caching frontier. Don't build predictors.
-5. Expert routing is Zipfian and *breadth*-correlated but *depth*-uncorrelated:
-   consecutive tokens churn experts, sibling candidates share them. Any amortization
-   scheme lives or dies on this distinction.
-6. Measure the cheap decisive experiment before building the engine. Every dead thesis
-   above cost hours; the engines they implied would have cost weeks.
+If you're doing MoE offload on consumer hardware, the portable results: measure streamed
+bytes-per-token, never file size — a quality-preserving quant can shrink the file 30% and
+change your speed not at all. A reactive LRU over expert slabs is effectively the caching
+frontier; don't build predictors. Expert routing is Zipfian, breadth-correlated and
+depth-uncorrelated — siblings share, consecutive tokens don't — and any amortization
+scheme lives or dies on that distinction. And before building anything speculative,
+compute `R* = 1 + t_fix/t_io` for your own setup; if your measured tree overhead can't
+get under it, the byte budget is already spent.
 
-*Hardware again for context: 2×16 GB Blackwell GPUs, 31 GB RAM, one fast NVMe. Everything
-measured with a llama.cpp fork used as oracle (routing traces via a scheduler eval
-callback; direct-read streamer via `GGML_MOE_STREAM`). Happy to share methodology details
-in the comments.*
+The meta-lesson cost the least and was worth the most: every one of these verdicts came
+from a cheap instrumented measurement, hours each. The engines they would have justified
+were weeks each. The empty `engine/` directory in the repo is not the failure. It's the
+receipt.
+
+---
+
+*RTX 5080 16 GB + RTX 5060 Ti 16 GB, Ryzen 9700X, 31 GB RAM, WD SN7100. Measurements via
+a llama.cpp fork used as an oracle: routing traces from a scheduler eval callback,
+direct-read expert streamer, profile-guided pinning. Research log with every dated verdict
+and dead end is in the repo alongside this article.*
