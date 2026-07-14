@@ -407,6 +407,37 @@ All three roadmap theses were driven to decisive verdicts this session:
 - **C (low-bit experts): REAL but spent on this target.** ~1.9× on a fat (Q6) model; but GLM-5.2 is
   already 3.88 bpw, so ~1.15× headroom, erased by having to stream from the slow drive.
 
+### t_fix profile — it's the intrinsic cost of experts-on-CPU, thread-saturated (2026-07-14)
+
+Isolated `t_fix` disk-free by running the small Qwopus-Q2K (12.9 GB, fits RAM) with `-cmoe --no-mmap`
+(experts in RAM, GPU attention, zero disk). 40 layers, top-8:
+
+| config | ms/token | tok/s |
+|---|---|---|
+| all-GPU (experts on GPU, NO bounce) | 9.7 | 103 |
+| CPU experts, 2 threads | 42.7 | 23 |
+| CPU experts, **4 threads** | 29.6 | 34 |
+| CPU experts, 8 threads | 30.4 | 33 |
+| CPU experts, 16 threads | 37.5 | 27 |
+
+Findings:
+1. **The CPU-expert path is ~3.4× the all-GPU floor** (30 vs 9.7 ms) — most of `t_fix` is simply the
+   cost of running experts on the CPU (matmul + per-layer CPU↔GPU bounce). This is *intrinsic* to the
+   >>RAM streaming design: experts can't live in VRAM, so this cost can't be offloaded away.
+2. **Thread-saturated at 4 cores** (2t→4t big gain, 4t→8t flat, 16t worse via hyperthread contention).
+   ⇒ no free parallelism; more/faster cores won't cut `t_fix`.
+3. **Quant format matters only modestly:** Q2K 33 ms vs Q3K 36 ms at 4t (~10%, memory-bandwidth-
+   consistent). (An initial Q3K=77 ms reading was a FLUKE — ruled out by re-running; lesson logged.)
+   So lower-bit experts shave `t_fix` a little, stacking weakly with Thesis C's disk saving.
+4. GLM's `t_fix` (0.36 s) ≫ the Qwopus per-layer scale (≈0.6 ms/layer × 90 ≈ 54 ms) ⇒ GLM's larger
+   experts (754B) dominate its CPU matmul; lower-bit experts would cut it ~proportional to bytes.
+
+**Verdict on `t_fix`:** reducible ~10–20% at most — via lower-bit experts (rides on Thesis C) and/or
+pipelining CPU-expert compute with disk prefetch + GPU attention across layers (real engine work,
+bounded by the sequential layer dependency). No free lunch: it's the fundamental price of CPU experts,
+and it's already core-saturated. Combined best case (fast-drive + lower-bit experts + partial `t_fix`
+overlap): **~1.1–1.3 tok/s** on GLM — a real but incremental lift over 0.9, not a multiple.
+
 Root cause is the governing equation itself: `tok/s ≈ bandwidth / bytes_per_token`. The inherited
 direct-read streamer already maximized *bandwidth* (fast drive, deep-QD bursts) and *bytes_per_token*
 is fixed by (a) top-4 routing and (b) a model that ships pre-quantized to 3.88 bpw. There is no
