@@ -53,8 +53,8 @@ direct reads). Models: GLM-5.2 754B (UD-IQ4_XS / UD-Q2_K_XL), Qwopus3.6-35B-A3B 
 GLM-4.5-Air 106B.
 
 **Method note:** every architectural bet got a cheap decisive experiment before any engine
-code — which is why the `engine/` directory is empty and the log is full. See also
-[vramwise](https://github.com/vramwise/vramwise), the speed predictor calibrated from this
-study's measured anchors.
+code — which is why the `engine/` directory is empty and the log is full. A companion tool, `vramwise` — a
+tok/s predictor calibrated from this study's measured anchors — is being prepared for
+release separately.
 
 MIT for code; the write-up text and figures are CC BY 4.0.
