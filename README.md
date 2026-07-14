@@ -38,8 +38,7 @@ at 19.5 tok/s the moment weights are resident. **The negative results are the pr
 
 - [`research/log.md`](research/log.md) — the dated research log: every thesis, measurement,
   and verdict, including the dead ends and what they cost.
-- [`writeup/ARTICLE.md`](writeup/ARTICLE.md) — the narrative write-up with figures
-  ([Reddit version](writeup/REDDIT.md)).
+- [`writeup/ARTICLE.md`](writeup/ARTICLE.md) — the narrative write-up with figures.
 - [`analysis/`](analysis) — the analysis scripts (`union_growth`, `depth_union`, `tree_io`,
   `working_set`) that turn routing traces into the verdicts above.
 - [`traces/`](traces) — sample routing traces and measurement logs.

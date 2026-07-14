@@ -223,7 +223,7 @@ amortization family (breadth *and* depth). Tools (`route-trace`, `union_growth`,
 
 The measurements establish two hard facts: (1) greedy already sits near the I/O ceiling (≈64% disk,
 streamer optimal); (2) the residual 36% is `t_fix` = per-layer CPU↔GPU sync + sampling. Remaining
-honest levers, in KICKOFF terms:
+honest levers, in the brief's terms:
 - **Thesis B — prompt-conditioned resident working set** (highest unexplored ceiling): is the expert
   set *per-conversation* small and predictable from the prompt pass? If so, pin it to RAM+VRAM and
   run generation mostly from fast memory. Decisive measurement: per-prompt working-set size +
@@ -326,7 +326,7 @@ past IQ4 at held quality; (3) then the mixed-precision streamer + measured tok/s
 
 ### Hot/cold split is BACKWARDS for I/O — uniform low-bit + imatrix dominates (2026-07-14)
 
-The KICKOFF's Thesis-C sketch (hot experts high-precision, cold experts IQ2) is I/O-counterproductive.
+The brief's Thesis-C sketch (hot experts high-precision, cold experts IQ2) is I/O-counterproductive.
 Streamed bytes/token are dominated by the HOT experts — they are routed most often (that is what
 makes them hot). Protecting them at high precision protects exactly the bytes streamed every token;
 shrinking cold experts saves little because they are rarely read. Quantified from GLM gen touches
