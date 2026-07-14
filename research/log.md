@@ -509,3 +509,36 @@ fit RAM+VRAM. Evidence already in this log: Qwopus-35B-A3B does **34 tok/s** wit
 31 GB RAM of this box with weights resident — projected high single digits to low teens, measurable
 in an afternoon. `tok/s = bandwidth / bytes_per_token` is not a slogan; 10 tok/s requires the
 numerator of RAM/VRAM, and only a smaller sibling gets its bytes there.
+
+## The Air-class A/B — MEASURED: 19.5 tok/s, target cleared 2× (2026-07-14)
+
+Follow-through on the postscript: downloaded **GLM-4.5-Air UD-Q2_K_XL** (47.4 GB, 106B total,
+~12B active, 47 layers, 128 experts top-8 + 1 shared) to fast D: and ran the resident-weights
+A/B against the streamed 754B baseline. Oracle build's `llama-completion`, `--no-mmap`
+(everything committed — zero disk in the decode loop), `-c 4096 -n 128 -t 4`, greedy, cold load.
+
+| | GLM-5.2 754B (streamed from NVMe) | GLM-4.5-Air 106B (resident VRAM+RAM) |
+|---|---|---|
+| decode | **0.90 tok/s** | **19.5 / 19.4 tok/s** (two prompts, 127 runs each) |
+| prompt | 1.1 tok/s | 27–29 tok/s |
+| load | >60 s | ~20 s |
+| output | coherent | coherent (thinking model, sensible trace) |
+
+**21.6× the baseline; 2× the 10 tok/s target.** Better than the postscript's "high single digits
+to low teens" projection because auto-fit packs ~60% of experts into the 32 GB of VRAM — only the
+RAM-resident minority of expert layers pays the CPU-matmul price, and none of it pays disk. This
+is the governing equation with the numerator swapped: same GLM family, same box, same day —
+residency, not engine cleverness, is the whole game. (754B streamed: 3.4 GB/token over 5.7 GB/s
+NVMe. 106B resident: ~5 GB active/token over VRAM+RAM bandwidth.)
+
+Config notes for reproduction (`tools/bench_air.cmd` needs updating to match):
+- **Let `-fit` do placement.** Manually pinning `-ngl 99` disables auto-fit ("already set by
+  user, abort") and the manual path insists on a fixed 21.6 GiB device-1 allocation regardless
+  of `-ts` → OOM. With no placement flags at all, fit lands everything correctly first try.
+- This llama-cli build rejects `-no-cnv`; use `llama-completion` for non-interactive runs.
+
+Ops lesson (cost: one reboot): the 07-13 t_fix profiling left a **driver-wedged unkillable
+llama-cli** (stuck in CUDA teardown, `taskkill /F` → WAIT_TIMEOUT) pinning ~18 GB — ~5 GB RSS
+plus ~13 GB of CUDA page-locked host memory that is **invisible to RSS/Task Manager accounting**
+(`cudaHostAlloc` pins outside working-set). If RAM goes missing with no visible consumer, check
+`nvidia-smi --query-compute-apps` for ghosts before trusting process lists.
