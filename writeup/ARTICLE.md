@@ -7,7 +7,7 @@ expert weights somewhere, and for a model this size, "somewhere" is mostly the S
 
 This is the write-up of three very dense days: a real 4.5x that took the model from 0.2 to 0.9 tok/s,
 then a series of measurements that killed every remaining idea I had, one by one, until
-what was left was a proof that 0.9 is the floor — and a 21.6x that had been sitting in
+what was left was a proof that nothing on this box gets past ~1.4 — and a 21.6x that had been sitting in
 plain sight the whole time. The dead ends are the useful part. I've kept them all.
 
 Everything here is measured on the box above. The repo has the dated research log,
@@ -152,6 +152,18 @@ the same 3.4 GB. And a perfect I/O engine still parks at Wall 2, because 754B-sc
 matmuls on consumer cores cost what they cost. Breaking Wall 2 means expert matmuls in
 VRAM, which means ~240 GB of VRAM, which means a different machine. Two independent
 inequalities. Beat one and the other catches you.
+
+**A cross-check from someone else's machine.** While writing this up I read colibri — a
+pure-C GLM-5.2 streamer built independently around the same idea. Their published numbers
+land on the same equation from the other side: ~11 GB/token cold (top-8) over a ~1 GB/s
+drive gives them 0.05–0.1 tok/s, and full expert residency across 6x RTX 5090 gives 6.84.
+Their cold-cache speculation caveat (expert-loads/token inflate ~660 → ~1100) is the
+Thesis-A verdict, independently measured. One technique of theirs I did not test: router-
+lookahead prefetch — they measure next-layer routing as ~72% predictable from the current
+layer's post-attention state, and prefetch on it. That overlaps compute with I/O, which is
+precisely the residual lever the t_fix profile identified; it could close the gap from
+0.9 toward the 1.41 I/O ceiling. It cannot cross it — no overlap trick reads bytes faster
+than the bus.
 
 ## Part 4 — the 21.6x that was always available
 
