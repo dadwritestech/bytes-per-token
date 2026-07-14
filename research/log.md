@@ -397,6 +397,32 @@ real multiple, but that is a below-3.88-bpw quant of an already-aggressive dynam
 real quality hit, and still drive-blocked. PPL-on-target not run (streamed from E: it is ~30 min+ and
 does not change the speed verdict).
 
+### Thesis C — DIRECT on-target measurement: UD-Q2_K_XL on fast D: = 0.9 tok/s, NO gain (2026-07-14)
+
+After the user re-provisioned disk, downloaded Unsloth's pre-made **UD-Q2_K_XL** (254 GB, imatrix-
+tuned k-quant, 0.70× the deleted IQ4_XS's 365 GB) to the fast **D:** SN7100 and ran the real decode
+A/B (streamer 12 GB, top-4, cold):
+
+| model on D: | streamed bytes/token | burst | **tg tok/s** | text |
+|---|---|---|---|---|
+| IQ4_XS (baseline) | ~3.4 GB (warm) | 3.93 GiB/s | 0.90 | coherent |
+| **UD-Q2_K_XL** | **~4.5 GiB cold → ~3.4 warm** | 3.9 GiB/s | **0.87–0.92** | coherent |
+
+**No speedup, despite a 0.70×-smaller model.** The streamer's own byte accounting is decisive:
+Q2_K_XL streams the *same* bytes/token as IQ4_XS. This is a **direct empirical confirmation of the
+hot/cold finding**: **Unsloth Dynamic** protects the hot experts, and the hot experts are exactly
+the ones routed/streamed every token. Its 130 GB of savings came from shrinking *cold* experts
+(rarely streamed) and non-expert tensors — which does nothing for per-token streamed bytes. My
+earlier byte-math projection (~1.15 tok/s) used the *total-size* ratio and was WRONG; streamed
+bytes/token — not model size — is what sets tok/s, and a quality-preserving quant leaves it ~fixed.
+
+Corollary: a *uniform* aggressive quant (shrink hot experts too) WOULD cut streamed bytes/token, but
+that is precisely the quality trade the UD quant avoids — and on an already-3.88-bpw model, uniform
+Q2 on the hot experts risks real degradation (Qwopus analog: +8.6% PPL). So the lever is real only
+if you accept quality loss on the hot path; the off-the-shelf quality-preserving quant gives nothing.
+
+**This overrides the earlier "~1.0–1.2 tok/s on D:" estimate: measured reality is ~0.9, unchanged.**
+
 ## PROJECT CONCLUSION (2026-07-14) — 0.9 tok/s is near the floor for GLM-5.2 on this box
 
 All three roadmap theses were driven to decisive verdicts this session:
