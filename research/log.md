@@ -573,3 +573,28 @@ along ANY axis we've measured — activation, neuron, or expert identity.
 
 Cost of the verdict: one script, one run, ~3 minutes of compute. The format + engine it
 would have justified: weeks. The method is the product.
+
+### Cross-domain Zipf: the hot set has stable SHAPE, unstable MEMBERSHIP (2026-07-15)
+
+Prompted by a reader question on the write-up: does the Zipfian hot set hold across
+domains, or does it shift between prose and code? We already had the traces to answer
+(`traces/qwopus_prose.csv`, `qwopus_code.csv`, `qwopus_sci.csv` — one generation each on
+the Qwopus proxy). `analysis/zipf_domains.py` counts touches per (layer, expert) slot per
+domain, takes the top-p% hot set at three budgets, and measures cross-domain transfer.
+
+| budget | self-coverage (prose/code/sci) | max pairwise Jaccard | worst cross-pin coverage |
+|---|---|---|---|
+| 1.7% of slots | 30.5% / 29.5% / 22.0% | 0.03 | prose-pin serves 1.4% of code |
+| 5% | 51.3% / 53.7% / 42.5% | 0.07 | code-pin serves 5.0% of prose |
+| 10% | 67.7% / 70.3% / 60.3% | 0.09 | prose-pin serves 10.6% of code |
+
+**Every domain is strongly Zipfian in isolation; the hot sets are nearly disjoint.** The
+distribution's shape is a stable property of the model — its support is a property of the
+context. This is the mechanism behind the Thesis B verdict: identity-keyed strategies
+(static pins, prompt-predicted placement) chase a moving target, while shape-keyed
+strategies (reactive LRU) surf it. Also consistent with the imatrix's 90–95% expert
+coverage ceiling: no single corpus routes through all the experts, because each corpus
+has its own tail.
+
+Caveat: one trace per domain, one proxy model — the number that matters is the *gap*
+(30% self vs 1–4% transfer at the same budget), which is far too wide to be sampling noise.
